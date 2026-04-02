@@ -1,31 +1,31 @@
 const axios = require('axios');
 
 export default async function handler(req, res) {
-  // CORS ayarları (Mobil uygulamanın bağlanabilmesi için)
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   const URL = 'https://onlineislemler.egm.gov.tr/trafik/sayfalar/edsharita.aspx';
 
   try {
+    // ⚡ Axios Timeout'u 8 saniyeye çekelim ki Vercel (10sn) bizi kesmeden biz hata yönetelim.
     const response = await axios.get(URL, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+      headers: { 
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36' 
       },
-      timeout: 15000,
+      timeout: 8000, 
     });
 
     const html = response.data;
-    const markersRegex = /var markers = (\[[\s\S]*?\]);/;
-    const match = html.match(markersRegex);
+    
+    // 🏎️ Daha hızlı regex: Sadece markers bloğunu al
+    const startIdx = html.indexOf('var markers = [');
+    if (startIdx === -1) throw new Error('Markers bloğu bulunamadı.');
+    
+    const endIdx = html.indexOf('];', startIdx);
+    const markersStr = html.substring(startIdx + 14, endIdx + 1);
 
-    if (!match || match.length < 2) {
-      throw new Error('EGM verisi okunamadı.');
-    }
-
-    let markersStr = match[1];
     let sanitizedData = [];
+    // EGM'nin garip formatını hızlıca parse et
     const itemRegex = /{\s*"Aciklama":\s*'(.*?)',\s*"lat":\s*'(.*?)',\s*"lng":\s*'(.*?)'\s*}/gs;
     
     let m;
@@ -37,10 +37,20 @@ export default async function handler(req, res) {
       });
     }
 
-    // Başarılı cevap
-    return res.status(200).json(sanitizedData);
+    if (sanitizedData.length === 0) throw new Error('Veri ayrıştırılamadı.');
+
+    return res.status(200).json({
+      source: 'cloud',
+      updatedAt: new Date().toISOString(),
+      count: sanitizedData.length,
+      markers: sanitizedData
+    });
 
   } catch (error) {
-    return res.status(500).json({ error: error.message });
+    console.error('API Error:', error.message);
+    return res.status(500).json({ 
+      error: 'EGM sunucusu yanıt vermiyor veya çok yavaş. Lütfen biraz sonra tekrar deneyin.',
+      details: error.message 
+    });
   }
 }
