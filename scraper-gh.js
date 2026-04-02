@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const URL = 'https://onlineislemler.egm.gov.tr/trafik/sayfalar/edsharita.aspx';
-const OUTPUT_FILE = path.join(__dirname, 'RadarApp', 'assets', 'eds_markers.json');
+const OUTPUT_FILE = path.join(__dirname, 'eds_markers.json');
 
 async function scrape() {
   console.log('EGM Verileri Çekiliyor...');
