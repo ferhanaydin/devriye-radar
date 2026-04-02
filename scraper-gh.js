@@ -10,7 +10,7 @@ async function scrape() {
   try {
     const response = await axios.get(URL, {
       headers: { 'User-Agent': 'Mozilla/5.0' },
-      timeout: 30000, // 30 saniye bekleyebiliriz!
+      timeout: 30000,
     });
 
     const html = response.data;
@@ -20,16 +20,23 @@ async function scrape() {
     if (!match) throw new Error('Veri yok');
 
     let markersStr = match[1];
-    let data = [];
+    let markers = [];
     const itemRegex = /{\s*"Aciklama":\s*'(.*?)',\s*"lat":\s*'(.*?)',\s*"lng":\s*'(.*?)'\s*}/gs;
     
     let m;
     while ((m = itemRegex.exec(markersStr)) !== null) {
-      data.push({ Aciklama: m[1].replace(/\\'/g, "'").trim(), lat: m[2], lng: m[3] });
+      markers.push({ Aciklama: m[1].replace(/\\'/g, "'").trim(), lat: m[2], lng: m[3] });
     }
 
-    fs.writeFileSync(OUTPUT_FILE, JSON.stringify(data, null, 2));
-    console.log(`Bitti! ${data.length} adet radar kaydedildi.`);
+    // 🔥 İşte istediğin "Ne zaman kazındığı" verisi!
+    const result = {
+      updatedAt: new Date().toISOString(),
+      count: markers.length,
+      markers: markers
+    };
+
+    fs.writeFileSync(OUTPUT_FILE, JSON.stringify(result, null, 2));
+    console.log(`Bitti! ${markers.length} adet radar kazıldı. Saat: ${result.updatedAt}`);
   } catch (e) {
     console.error('Hata:', e.message);
     process.exit(1);
