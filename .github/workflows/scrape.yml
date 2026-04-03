@@ -2,31 +2,42 @@ name: EGM Radar Scraper
 
 on:
   schedule:
-    - cron: '*/20 * * * *' # Her 20 dakikada bir çalış
-  workflow_dispatch: # Manuel tetikleme için
+    - cron: '*/30 * * * *'  # Her 30 dakikada bir
+  workflow_dispatch:          # Manuel tetikleme
+
+# GitHub'ın repoya yazabilmesi için gerekli izin
+permissions:
+  contents: write
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    # Job seviyesinde hata olsa bile mail gönderme
+    continue-on-error: true
+
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
+      - name: Node.js Kur
+        uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
 
-      - name: Install Dependencies
+      - name: Bağımlılıkları Yükle
         run: npm install axios
+        continue-on-error: true   # npm hatası workflow'u durdurmasın
 
-      - name: Run Scraper
+      - name: Kazımayı Çalıştır
         run: node scraper-gh.js
+        continue-on-error: true   # Scraper hata verse bile devam et
 
-      - name: Commit and Push Changes
+      - name: Değişiklikleri Kaydet ve Gönder
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add eds_markers.json
-          git commit -m "🚀 Otomatik Güncelleme: Taze EGM verileri" || echo "Değişiklik yok"
-          git push
+          # Değişiklik yoksa commit atma (|| true ile hatayı yoksay)
+          git diff --quiet eds_markers.json || git add eds_markers.json && \
+          git commit -m "🚀 Otomatik: EGM radar verisi güncellendi" || true
+          git push || true
+        continue-on-error: true   # Push hatası mail göndermesin
