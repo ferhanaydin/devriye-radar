@@ -66,6 +66,28 @@ function getRadarType(aciklama) {
 const fmtDist = (m) => m < 1000 ? `${Math.round(m)}m` : `${(m / 1000).toFixed(1)}km`;
 const speedColor = (kmh) => kmh < 80 ? '#30D158' : kmh < 100 ? '#FF9500' : '#FF3B30';
 
+// Veri tazeliği — kaç saat/gün önce güncellendiği
+function getDataStatus(lastUpdate, dataSource) {
+  if (!lastUpdate) return { label: 'Yükleniyor...', color: '#FF9500', stale: false };
+
+  const diffMs = Date.now() - new Date(lastUpdate).getTime();
+  const diffH  = diffMs / (1000 * 60 * 60);
+  const diffD  = diffH / 24;
+
+  let label;
+  if (diffH < 1)       label = 'Az önce güncellendi';
+  else if (diffH < 24) label = `${Math.floor(diffH)} saat önce`;
+  else                 label = `${Math.floor(diffD)} gün önce`;
+
+  // Renk: taze=yeşil, 48s+=turuncu, 7g+=kırmızı; offline=kırmızı
+  let color = '#30D158';
+  if (dataSource !== 'BuluT') color = '#FF3B30';
+  else if (diffH > 168) color = '#FF3B30'; // 7 gün
+  else if (diffH > 48)  color = '#FF9500'; // 48 saat
+
+  return { label, color, stale: diffH > 168 };
+}
+
 const VOICE_MSGS = {
   1000: 'Dikkat! Bir kilometre ileride radar kontrol noktası!',
   500: 'Dikkat! Beş yüz metre ileride radar!',
@@ -178,6 +200,19 @@ export default function App() {
       setIsLoading(false);
     }
   }, []);
+
+  // ─── Eski Veri Uyarısı ───────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!lastUpdate || isLoading) return;
+    const diffH = (Date.now() - new Date(lastUpdate).getTime()) / (1000 * 60 * 60);
+    if (diffH > 168) { // 7 günden eski
+      Alert.alert(
+        '⚠️ Veri Güncel Değil',
+        `Radar verileri ${Math.floor(diffH / 24)} gündür güncellenemiyor. Bilgiler eski olabilir, lütfen dikkatli sürün.`,
+        [{ text: 'Anladım', style: 'default' }]
+      );
+    }
+  }, [lastUpdate, isLoading]);
 
   // ─── Topluluk Radarları Yükleme ─────────────────────────────────────────────
   const loadCommunityRadars = useCallback(async () => {
@@ -373,10 +408,20 @@ export default function App() {
         <View style={s.hRow}>
           <View>
             <Text style={s.appName}>Devriye</Text>
-            <View style={s.badge}>
-              <View style={[s.dot, { backgroundColor: isLoading ? '#FF9500' : (dataSource === 'BuluT' ? '#30D158' : '#FF3B30') }]} />
-              <Text style={s.badgeTxt}>{isLoading ? 'Yükleniyor...' : `${markers.length} aktif nokta`}</Text>
-            </View>
+            {(() => {
+              const ds = getDataStatus(lastUpdate, dataSource);
+              return (
+                <View style={s.badge}>
+                  <View style={[s.dot, { backgroundColor: isLoading ? '#FF9500' : ds.color }]} />
+                  <Text style={s.badgeTxt}>
+                    {isLoading
+                      ? 'Yükleniyor...'
+                      : `${markers.length} nokta · ${ds.label}`
+                    }
+                  </Text>
+                </View>
+              );
+            })()}
           </View>
           <TouchableOpacity style={s.hBtn} onPress={() => setShowSettings(true)}>
             <Settings color="#fff" size={18} />
