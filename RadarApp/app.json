@@ -1,0 +1,47 @@
+{
+  "expo": {
+    "name": "Devriye - EDS Radar",
+    "slug": "devriye-eds-radar",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#000000"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.devriye.edsradar",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Devriye, yakınındaki EDS radar noktalarını tespit etmek için konumuna ihtiyaç duyuyor.",
+        "NSLocationAlwaysUsageDescription": "Devriye, sürüş sırasında radarları takip edebilmek için arka planda konumuna ihtiyaç duyuyor.",
+        "NSMicrophoneUsageDescription": "Sesli uyarılar için mikrofon izni gerekiyor."
+      }
+    },
+    "android": {
+      "package": "com.devriye.edsradar",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#000000"
+      },
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "VIBRATE"
+      ]
+    },
+    "plugins": [
+      "expo-location",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#FF3B30"
+        }
+      ]
+    ]
+  }
+}
