@@ -8,8 +8,9 @@ import MapView, { Marker, Circle, Polyline, PROVIDER_DEFAULT } from 'react-nativ
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
-  Share2, Navigation, List, Map, RefreshCw,
-  ShieldAlert, Radio, Settings, MapPin, ExternalLink, Gauge, Search, X, Route
+  Navigation, List, Map, RefreshCw, ShieldAlert, Radio,
+  Settings, MapPin, ExternalLink, Gauge, Search, X, Route,
+  AlertTriangle, Users, CheckCircle
 } from 'lucide-react-native';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
@@ -24,16 +25,17 @@ import { loadSettings, loadStats, incrementWarning, DEFAULT_SETTINGS } from './s
 const { width, height } = Dimensions.get('window');
 const EDS_DATA = require('./assets/eds_markers.json');
 
+// ─── API URL'leri ─────────────────────────────────────────────────────────────
+const API_BASE = 'https://devriye-radar.vercel.app';
+
 // ─── Bildirim Ayarı ──────────────────────────────────────────────────────────
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
+    shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: true,
   }),
 });
 
-// ─── Haversine Mesafe (metre) ─────────────────────────────────────────────────
+// ─── Yardımcı Fonksiyonlar ───────────────────────────────────────────────────
 function getDistanceM(lat1, lon1, lat2, lon2) {
   const R = 6371000;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -44,14 +46,21 @@ function getDistanceM(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// Noktanın Çizgiye Uzaklığı (Basit bir kontrol için - metre bazında)
 function isNearPath(point, path, thresholdM = 500) {
-  // Rotadaki her noktaya bak (Performans için seyreltilmiş bakılabilir)
-  for (let i = 0; i < path.length; i += 2) { // Her 2. noktaya bak (Hız için)
-    const dist = getDistanceM(point.lat, point.lng, path[i].latitude, path[i].longitude);
-    if (dist <= thresholdM) return true;
+  for (let i = 0; i < path.length; i += 3) {
+    if (getDistanceM(point.lat, point.lng, path[i].latitude, path[i].longitude) <= thresholdM)
+      return true;
   }
   return false;
+}
+
+// Radar tipi — EGM açıklama metninden çıkar
+function getRadarType(aciklama) {
+  const a = aciklama?.toLowerCase() || '';
+  if (a.includes('ortalama')) return { label: 'Ortalama Hız', color: '#FF9500', icon: '⚡' };
+  if (a.includes('kırmızı') || a.includes('kirmizi')) return { label: 'Kırmızı Işık', color: '#FF2D55', icon: '🚦' };
+  if (a.includes('mobil')) return { label: 'Mobil EDS', color: '#AF52DE', icon: '🚔' };
+  return { label: 'Sabit EDS', color: '#FF3B30', icon: '📷' };
 }
 
 const fmtDist = (m) => m < 1000 ? `${Math.round(m)}m` : `${(m / 1000).toFixed(1)}km`;
@@ -62,6 +71,7 @@ const VOICE_MSGS = {
   500: 'Dikkat! Beş yüz metre ileride radar!',
   200: 'Dikkat! İki yüz metre ileride radar! Hızınızı düşürün!',
   speed: 'Dikkat! Hız fazla ve ileride radar var! Yavaşlayın!',
+  community: 'Dikkat! Yakında mobil radar bildirildi!',
 };
 
 export default function App() {
@@ -69,13 +79,15 @@ export default function App() {
   const alertAnim = useRef(new Animated.Value(0)).current;
   const detailAnim = useRef(new Animated.Value(height)).current;
   const listAnim = useRef(new Animated.Value(height)).current;
-
+  const reportAnim = useRef(new Animated.Value(0)).current;
   const lastAlertTime = useRef({});
   const alertActiveRef = useRef(false);
+  const communityAlertedIds = useRef(new Set());
 
   // ─── State ──────────────────────────────────────────────────────────────────
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [markers, setMarkers] = useState([]);
+  const [communityRadars, setCommunityRadars] = useState([]); // Topluluk radarları
   const [userLocation, setUserLocation] = useState(null);
   const [currentSpeed, setCurrentSpeed] = useState(0);
   const [nearbyRadars, setNearbyRadars] = useState([]);
@@ -90,14 +102,13 @@ export default function App() {
   const [lastUpdate, setLastUpdate] = useState(null);
   const [dataSource, setDataSource] = useState('—');
   const [stats, setStats] = useState({ totalWarnings: 0, todayWarnings: 0 });
-
-  // Rota State'leri
   const [destInput, setDestInput] = useState('');
   const [routePath, setRoutePath] = useState(null);
   const [routeRadarsCount, setRouteRadarsCount] = useState(0);
   const [isRouting, setIsRouting] = useState(false);
+  const [reportSent, setReportSent] = useState(false); // Bildir butonu feedback
 
-  // ─── İzinler + İlk Yükleme ──────────────────────────────────────────────────
+  // ─── İlk Yükleme ────────────────────────────────────────────────────────────
   useEffect(() => {
     (async () => {
       const [savedSettings, savedStats] = await Promise.all([loadSettings(), loadStats()]);
@@ -116,10 +127,8 @@ export default function App() {
         setUserLocation(loc.coords);
         setTimeout(() => {
           mapRef.current?.animateToRegion({
-            latitude: loc.coords.latitude,
-            longitude: loc.coords.longitude,
-            latitudeDelta: 0.04,
-            longitudeDelta: 0.04,
+            latitude: loc.coords.latitude, longitude: loc.coords.longitude,
+            latitudeDelta: 0.04, longitudeDelta: 0.04,
           }, 1200);
         }, 800);
 
@@ -131,19 +140,26 @@ export default function App() {
           }
         );
       }
-      loadMarkers();
+
+      await loadMarkers();
+      await loadCommunityRadars();
     })();
     return () => deactivateKeepAwake();
   }, []);
 
-  // ─── Veri Yükle ─────────────────────────────────────────────────────────────
+  // Topluluk radarlarını her 2 dakikada bir tazele
+  useEffect(() => {
+    const interval = setInterval(loadCommunityRadars, 120000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // ─── EGM Veri Yükleme ───────────────────────────────────────────────────────
   const loadMarkers = useCallback(async () => {
     setIsLoading(true);
-    const VERCEL_API_URL = 'https://devriye-radar.vercel.app/eds_markers.json';
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 15000);
-      const res = await fetch(VERCEL_API_URL, { signal: controller.signal });
+      const res = await fetch(`${API_BASE}/eds_markers.json`, { signal: controller.signal });
       clearTimeout(timeoutId);
       const result = await res.json();
       const data = result.markers || result;
@@ -163,82 +179,88 @@ export default function App() {
     }
   }, []);
 
-  // ─── ROTA OLUŞTURMA ─────────────────────────────────────────────────────────
+  // ─── Topluluk Radarları Yükleme ─────────────────────────────────────────────
+  const loadCommunityRadars = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/community`);
+      const { radars } = await res.json();
+      if (radars) setCommunityRadars(radars);
+    } catch (e) {
+      // Sessizce geç
+    }
+  }, []);
+
+  // ─── Mobil Radar Bildir ──────────────────────────────────────────────────────
+  const reportCommunityRadar = async () => {
+    if (!userLocation) return;
+    try {
+      await fetch(`${API_BASE}/api/community`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lat: userLocation.latitude, lng: userLocation.longitude }),
+      });
+      setReportSent(true);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      await loadCommunityRadars();
+      setTimeout(() => setReportSent(false), 3000);
+    } catch (e) {
+      Alert.alert('Hata', 'Bildirim gönderilemedi.');
+    }
+  };
+
+  // ─── Rota Oluşturma ──────────────────────────────────────────────────────────
   const searchRoute = async () => {
     if (!destInput || !userLocation) return;
     setIsLoading(true);
     Keyboard.dismiss();
-
     try {
-      // 1. Hedef koordinatlarını al
       const geocode = await Location.geocodeAsync(destInput);
-      if (!geocode || geocode.length === 0) {
-        Alert.alert('Hata', 'Gidilecek yer bulunamadı.');
-        return;
-      }
+      if (!geocode?.length) { Alert.alert('Hata', 'Yer bulunamadı.'); return; }
       const { latitude: dLat, longitude: dLng } = geocode[0];
-
-      // 2. OSRM API ile rotayı çek (Ücretsiz)
       const url = `https://router.project-osrm.org/route/v1/driving/${userLocation.longitude},${userLocation.latitude};${dLng},${dLat}?overview=full&geometries=polyline`;
       const res = await fetch(url);
       const data = await res.json();
-
-      if (!data.routes || data.routes.length === 0) {
-        Alert.alert('Hata', 'Yol tarifi oluşturulamadı.');
-        return;
-      }
-
-      // 3. Polyline'ı çöz
+      if (!data.routes?.length) { Alert.alert('Hata', 'Yol tarifi oluşturulamadı.'); return; }
       const points = polyline.decode(data.routes[0].geometry);
-      const coords = points.map(point => ({ latitude: point[0], longitude: point[1] }));
+      const coords = points.map(p => ({ latitude: p[0], longitude: p[1] }));
       setRoutePath(coords);
       setIsRouting(true);
-
-      // 4. Rota üzerindeki radarları hesapla (Gelecekteki performans için filtreleme)
-      const onRoute = markers.filter(m => isNearPath(m, coords));
-      setRouteRadarsCount(onRoute.length);
-
-      // Haritayı rotaya sığdır
+      setRouteRadarsCount(markers.filter(m => isNearPath(m, coords)).length);
       mapRef.current?.fitToCoordinates(coords, {
-        edgePadding: { top: 120, right: 50, bottom: 200, left: 50 },
-        animated: true,
+        edgePadding: { top: 130, right: 50, bottom: 220, left: 50 }, animated: true,
       });
-
     } catch (e) {
-      Alert.alert('Hata', 'Rota oluşturulurken bir problem oluştu.');
+      Alert.alert('Hata', 'Rota oluşturulamadı.');
     } finally {
       setIsLoading(false);
     }
   };
 
   const clearRoute = () => {
-    setRoutePath(null);
-    setIsRouting(false);
-    setDestInput('');
-    setRouteRadarsCount(0);
-    goToMyLocation();
+    setRoutePath(null); setIsRouting(false); setDestInput(''); setRouteRadarsCount(0);
+    if (userLocation) mapRef.current?.animateToRegion({
+      latitude: userLocation.latitude, longitude: userLocation.longitude,
+      latitudeDelta: 0.025, longitudeDelta: 0.025,
+    }, 700);
   };
 
-  // ─── Uyarı Kontrolü ─────────────────────────────────────────────────────────
+  // ─── Uyarı Kontrolü ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (!userLocation || markers.length === 0) return;
-    const sorted = markers
-      .map(m => ({ ...m, dist: getDistanceM(userLocation.latitude, userLocation.longitude, parseFloat(m.lat), parseFloat(m.lng)) }))
-      .sort((a, b) => a.dist - b.dist);
+    const sorted = markers.map(m => ({
+      ...m, dist: getDistanceM(userLocation.latitude, userLocation.longitude, parseFloat(m.lat), parseFloat(m.lng))
+    })).sort((a, b) => a.dist - b.dist);
 
     const nearest = sorted[0];
     setNearestRadar(nearest);
     setNearestDist(nearest.dist);
     setNearbyRadars(sorted.slice(0, 8));
 
-    const alertDist = settings.alertDistance;
+    // EGM radar bantları
     const now = Date.now();
-    const bands = [200, 500, 1000].filter(b => b <= alertDist || b === 200 || b === 500);
-
-    for (const band of bands) {
-      if (nearest.dist <= band) {
-        const lastT = lastAlertTime.current[band] || 0;
-        if (now - lastT > 45000) {
+    for (const band of [200, 500, 1000]) {
+      if (nearest.dist <= band && band <= settings.alertDistance) {
+        if (now - (lastAlertTime.current[band] || 0) > 45000) {
           lastAlertTime.current[band] = now;
           triggerAlert(nearest, band, currentSpeed > 80 && band <= 500);
           break;
@@ -246,24 +268,33 @@ export default function App() {
       }
     }
 
-    if (nearest.dist <= alertDist) {
+    // Topluluk radarı kontrolü
+    communityRadars.forEach(cr => {
+      const dist = getDistanceM(userLocation.latitude, userLocation.longitude, cr.lat, cr.lng);
+      if (dist < 500 && !communityAlertedIds.current.has(cr.id)) {
+        communityAlertedIds.current.add(cr.id);
+        if (settings.voiceEnabled) Speech.speak(VOICE_MSGS.community, { language: 'tr-TR' });
+        if (settings.hapticEnabled) Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      }
+    });
+
+    if (nearest.dist <= settings.alertDistance) {
       if (!alertActiveRef.current) {
-        alertActiveRef.current = true;
-        setIsAlertActive(true);
+        alertActiveRef.current = true; setIsAlertActive(true);
         Animated.spring(alertAnim, { toValue: 1, useNativeDriver: true, tension: 20, friction: 7 }).start();
       }
     } else {
       if (alertActiveRef.current) {
-        alertActiveRef.current = false;
-        setIsAlertActive(false);
+        alertActiveRef.current = false; setIsAlertActive(false);
         Animated.timing(alertAnim, { toValue: 0, duration: 300, useNativeDriver: true }).start();
+        lastAlertTime.current = {};
       }
     }
-  }, [userLocation, markers, settings.alertDistance, currentSpeed]);
+  }, [userLocation, markers, communityRadars, settings, currentSpeed]);
 
   const triggerAlert = async (radar, band, isSpeedHigh) => {
-    const msg = isSpeedHigh ? VOICE_MSGS.speed : (VOICE_MSGS[band] || VOICE_MSGS[500]);
-    if (settings.voiceEnabled) Speech.speak(msg, { language: 'tr-TR', rate: 0.95 });
+    const msg = isSpeedHigh ? VOICE_MSGS.speed : VOICE_MSGS[band];
+    if (settings.voiceEnabled) { Speech.stop(); Speech.speak(msg, { language: 'tr-TR', rate: 0.95 }); }
     if (settings.hapticEnabled) Haptics.notificationAsync(band <= 200 ? Haptics.NotificationFeedbackType.Error : Haptics.NotificationFeedbackType.Warning);
     await Notifications.scheduleNotificationAsync({
       content: {
@@ -278,7 +309,7 @@ export default function App() {
 
   const openDetail = useCallback((marker) => {
     setSelectedMarker(marker);
-    Animated.spring(detailAnim, { toValue: height * 0.52, useNativeDriver: true, tension: 18, friction: 8 }).start();
+    Animated.spring(detailAnim, { toValue: height * 0.55, useNativeDriver: true, tension: 18, friction: 8 }).start();
   }, []);
 
   const closeDetail = useCallback(() => {
@@ -289,7 +320,7 @@ export default function App() {
     if (!userLocation) return;
     mapRef.current?.animateToRegion({
       latitude: userLocation.latitude, longitude: userLocation.longitude,
-      latitudeDelta: 0.02, longitudeDelta: 0.02,
+      latitudeDelta: 0.025, longitudeDelta: 0.025,
     }, 700);
   };
 
@@ -300,60 +331,64 @@ export default function App() {
 
       {/* HARİTA */}
       <MapView
-        ref={mapRef}
-        style={s.map}
-        provider={PROVIDER_DEFAULT}
+        ref={mapRef} style={s.map} provider={PROVIDER_DEFAULT}
         mapType={isSatellite ? 'satellite' : 'standard'}
         initialRegion={{ latitude: 39.9, longitude: 32.8, latitudeDelta: 8, longitudeDelta: 8 }}
-        showsUserLocation
-        showsMyLocationButton={false}
-        onPress={() => closeDetail()}
+        showsUserLocation showsMyLocationButton={false}
+        onPress={closeDetail}
       >
-        {/* Rota Çizgisi */}
         {routePath && (
-          <Polyline
-            coordinates={routePath}
-            strokeWidth={5}
-            strokeColor="#007AFF"
-            lineCap="round"
-            lineJoin="round"
-          />
+          <Polyline coordinates={routePath} strokeWidth={5} strokeColor="#007AFF" lineCap="round" />
         )}
 
-        {/* Radar Noktaları - Rota varsa sadece rota üzerindekiler koyu, diğerleri silik */}
+        {/* EGM Radarları */}
         {markers.map((m, i) => {
-          const lat = parseFloat(m.lat);
-          const lng = parseFloat(m.lng);
-          const isOnRoute = routePath ? isNearPath(m, routePath) : true;
-
-          // Performans için sadece yakındaki veya rota üzerindeki ikonları render et
-          if (routePath && !isOnRoute) return null;
-
+          if (routePath && !isNearPath(m, routePath)) return null;
+          const type = getRadarType(m.Aciklama);
           return (
-            <Marker key={i} coordinate={{ latitude: lat, longitude: lng }} tracksViewChanges={false} onPress={() => openDetail(m)}>
-              <View style={[s.pin, !isOnRoute && { opacity: 0.3 }]}>
-                <View style={[s.pinDot, nearestRadar?.Aciklama === m.Aciklama && isAlertActive && s.pinDotAlert]} />
+            <Marker key={`egm-${i}`} coordinate={{ latitude: parseFloat(m.lat), longitude: parseFloat(m.lng) }}
+              tracksViewChanges={false} onPress={() => openDetail(m)}>
+              <View style={s.pin}>
+                <View style={[s.pinDot, { backgroundColor: type.color },
+                  nearestRadar?.Aciklama === m.Aciklama && isAlertActive && s.pinDotAlert]} />
               </View>
             </Marker>
           );
         })}
+
+        {/* Topluluk Radarları (Mor) */}
+        {communityRadars.map((cr) => (
+          <Marker key={`cr-${cr.id}`} coordinate={{ latitude: cr.lat, longitude: cr.lng }}
+            tracksViewChanges={false}>
+            <View style={s.communityPin}>
+              <Text style={s.communityPinText}>🚔</Text>
+              {cr.votes > 1 && <View style={s.voteBadge}><Text style={s.voteTxt}>{cr.votes}</Text></View>}
+            </View>
+          </Marker>
+        ))}
       </MapView>
 
-      {/* LOGO & STAT BAR */}
+      {/* HEADER */}
       <BlurView intensity={88} tint="dark" style={s.header}>
         <View style={s.hRow}>
-          <Text style={s.appName}>Devriye</Text>
-          <View style={s.hBtns}>
-            <TouchableOpacity style={s.hBtn} onPress={() => setShowSettings(true)}><Settings color="#fff" size={18} /></TouchableOpacity>
+          <View>
+            <Text style={s.appName}>Devriye</Text>
+            <View style={s.badge}>
+              <View style={[s.dot, { backgroundColor: isLoading ? '#FF9500' : (dataSource === 'BuluT' ? '#30D158' : '#FF3B30') }]} />
+              <Text style={s.badgeTxt}>{isLoading ? 'Yükleniyor...' : `${markers.length} aktif nokta`}</Text>
+            </View>
           </View>
+          <TouchableOpacity style={s.hBtn} onPress={() => setShowSettings(true)}>
+            <Settings color="#fff" size={18} />
+          </TouchableOpacity>
         </View>
 
-        {/* Arama Barı (Yeni!) */}
+        {/* Arama Barı */}
         <View style={s.searchWrap}>
-          <Search color="#777" size={18} style={{ marginLeft: 12 }} />
+          <Search color="#777" size={17} style={{ marginLeft: 12 }} />
           <TextInput
-            placeholder="Nereye gitmek istersin?"
-            placeholderTextColor="#777"
+            placeholder="Rota oluştur — nereye gidiyorsun?"
+            placeholderTextColor="#555"
             style={s.searchInput}
             value={destInput}
             onChangeText={setDestInput}
@@ -361,16 +396,17 @@ export default function App() {
             returnKeyType="search"
           />
           {destInput.length > 0 && (
-            <TouchableOpacity onPress={clearRoute} style={{ padding: 8 }}>
-              <X color="#777" size={18} />
+            <TouchableOpacity onPress={clearRoute} style={{ padding: 10 }}>
+              <X color="#777" size={16} />
             </TouchableOpacity>
           )}
         </View>
 
         {isRouting && (
-          <View style={s.routeInfo}>
-            <Route color="#30D158" size={16} />
-            <Text style={s.routeInfoTxt}>Rotada {routeRadarsCount} radar bulundu</Text>
+          <View style={s.routeInfoBar}>
+            <Route color="#30D158" size={14} />
+            <Text style={s.routeInfoTxt}>Rotanda <Text style={{ color: '#FF3B30', fontWeight: '800' }}>{routeRadarsCount}</Text> radar var</Text>
+            <TouchableOpacity onPress={clearRoute}><Text style={{ color: '#007AFF', fontSize: 12 }}>Temizle</Text></TouchableOpacity>
           </View>
         )}
       </BlurView>
@@ -378,96 +414,220 @@ export default function App() {
       {/* HIZ GÖSTERGESİ */}
       <View style={s.speedWrap}>
         <BlurView intensity={80} tint="dark" style={s.speedCard}>
-          <Gauge color={speedColor(currentSpeed)} size={16} style={{ marginBottom: 2 }} />
+          <Gauge color={speedColor(currentSpeed)} size={14} style={{ marginBottom: 1 }} />
           <Text style={[s.speedNum, { color: speedColor(currentSpeed) }]}>{currentSpeed}</Text>
           <Text style={s.speedUnit}>km/h</Text>
         </BlurView>
       </View>
 
+      {/* MOBİL RADAR BİLDİR BUTONU */}
+      <TouchableOpacity style={[s.reportBtn, reportSent && s.reportBtnSent]} onPress={reportCommunityRadar} activeOpacity={0.8}>
+        <BlurView intensity={85} tint="dark" style={s.reportInner}>
+          {reportSent
+            ? <><CheckCircle color="#30D158" size={18} /><Text style={[s.reportTxt, { color: '#30D158' }]}>Gönderildi!</Text></>
+            : <><AlertTriangle color="#FF9500" size={18} /><Text style={s.reportTxt}>Mobil Radar!</Text></>
+          }
+        </BlurView>
+      </TouchableOpacity>
+
       {/* KONTROLLER */}
       <View style={s.controls}>
         <Btn onPress={goToMyLocation}><Navigation color="#007AFF" size={20} /></Btn>
         <Btn onPress={() => setIsSatellite(p => !p)}><Map color={isSatellite ? '#FFD60A' : '#aaa'} size={20} /></Btn>
-        <Btn onPress={() => { setShowList(true); Animated.spring(listAnim, { toValue: height * 0.4, useNativeDriver: true }).start(); }}><List color="#fff" size={20} /></Btn>
+        <Btn onPress={() => { setShowList(true); Animated.spring(listAnim, { toValue: height * 0.42, useNativeDriver: true }).start(); }}>
+          <List color="#fff" size={20} />
+        </Btn>
       </View>
 
       {/* UYARI KARTI */}
       {isAlertActive && (
-        <Animated.View style={[s.alertWrap, { opacity: alertAnim, transform: [{ translateY: alertAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }]}>
-          <LinearGradient colors={['rgba(255,59,48,0.15)', 'rgba(255,59,48,0.04)']} style={s.alertGrad}>
+        <Animated.View style={[s.alertWrap, {
+          opacity: alertAnim,
+          transform: [{ translateY: alertAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }]
+        }]}>
+          <LinearGradient colors={['rgba(255,59,48,0.18)', 'rgba(255,59,48,0.04)']} style={s.alertGrad}>
             <BlurView intensity={90} tint="dark" style={s.alertCard}>
-              <View style={s.alertIcon}><Radio color="#FF3B30" size={24} /></View>
+              <View style={s.alertIcon}><Radio color="#FF3B30" size={22} /></View>
               <View style={{ flex: 1, marginLeft: 12 }}>
                 <Text style={s.alertTitle}>RADAR TESPİT EDİLDİ</Text>
+                <Text style={s.alertType}>{getRadarType(nearestRadar?.Aciklama).icon} {getRadarType(nearestRadar?.Aciklama).label}</Text>
                 <Text style={s.alertDesc} numberOfLines={1}>{nearestRadar?.Aciklama}</Text>
               </View>
-              <View style={s.alertDistBox}><Text style={s.alertDistNum}>{fmtDist(nearestDist)}</Text><Text style={s.alertDistLbl}>uzakta</Text></View>
+              <View style={s.alertDistBox}>
+                <Text style={s.alertDistNum}>{nearestDist ? fmtDist(nearestDist) : ''}</Text>
+                <Text style={s.alertDistLbl}>uzakta</Text>
+              </View>
             </BlurView>
           </LinearGradient>
         </Animated.View>
       )}
 
       {/* RADAR DETAY KARTI */}
-      {selectedMarker && (
-        <Animated.View style={[s.detailWrap, { transform: [{ translateY: detailAnim }] }]}>
-          <BlurView intensity={98} tint="dark" style={s.detailInner}>
-            <View style={s.detailHandle} /><View style={s.detailHeader}><View style={s.detailIconBox}><ShieldAlert color="#FF3B30" size={28} /></View><View style={{ flex: 1, marginLeft: 14 }}><Text style={s.detailTitle}>EDS Kontrol Noktası</Text><Text style={s.detailCoord}>{parseFloat(selectedMarker.lat).toFixed(4)}, {parseFloat(selectedMarker.lng).toFixed(4)}</Text></View><TouchableOpacity onPress={closeDetail}><Text style={{ color: '#007AFF', fontSize: 16 }}>Kapat</Text></TouchableOpacity></View>
-            <Text style={s.detailDesc}>{selectedMarker.Aciklama}</Text>
-            <TouchableOpacity style={s.mapsBtn} onPress={() => Linking.openURL(`https://maps.google.com/?q=${selectedMarker.lat},${selectedMarker.lng}`)}><LinearGradient colors={['#1C1C1E', '#2C2C2E']} style={s.mapsBtnInner}><MapPin color="#007AFF" size={18} /><Text style={s.mapsBtnTxt}>Haritada Aç</Text><ExternalLink color="#666" size={15} /></LinearGradient></TouchableOpacity>
+      {selectedMarker && (() => {
+        const type = getRadarType(selectedMarker.Aciklama);
+        return (
+          <Animated.View style={[s.detailWrap, { transform: [{ translateY: detailAnim }] }]}>
+            <BlurView intensity={98} tint="dark" style={s.detailInner}>
+              <View style={s.detailHandle} />
+              <View style={s.detailHeader}>
+                <View style={[s.detailIconBox, { backgroundColor: type.color + '22' }]}>
+                  <Text style={{ fontSize: 26 }}>{type.icon}</Text>
+                </View>
+                <View style={{ flex: 1, marginLeft: 14 }}>
+                  <Text style={s.detailTitle}>{type.label}</Text>
+                  <View style={[s.typeBadge, { backgroundColor: type.color + '33', borderColor: type.color }]}>
+                    <Text style={[s.typeBadgeTxt, { color: type.color }]}>{type.label}</Text>
+                  </View>
+                </View>
+                <TouchableOpacity onPress={closeDetail}><Text style={{ color: '#007AFF', fontSize: 16 }}>Kapat</Text></TouchableOpacity>
+              </View>
+
+              <Text style={s.detailDesc}>{selectedMarker.Aciklama}</Text>
+
+              <View style={s.detailStats}>
+                <View style={s.dStat}><Text style={s.dStatVal}>{nearestDist ? fmtDist(nearestDist) : '—'}</Text><Text style={s.dStatLbl}>Uzaklık</Text></View>
+                <View style={s.dStatSep} />
+                <View style={s.dStat}><Text style={s.dStatVal}>{type.icon}</Text><Text style={s.dStatLbl}>Tip</Text></View>
+                <View style={s.dStatSep} />
+                <View style={s.dStat}><Text style={s.dStatVal}>EGM</Text><Text style={s.dStatLbl}>Kaynak</Text></View>
+              </View>
+
+              <TouchableOpacity style={s.mapsBtn}
+                onPress={() => Linking.openURL(`https://maps.google.com/?q=${selectedMarker.lat},${selectedMarker.lng}`)}>
+                <LinearGradient colors={['#1C1C1E', '#2C2C2E']} style={s.mapsBtnInner}>
+                  <MapPin color="#007AFF" size={18} />
+                  <Text style={s.mapsBtnTxt}>Google Maps'te Aç</Text>
+                  <ExternalLink color="#666" size={14} />
+                </LinearGradient>
+              </TouchableOpacity>
+            </BlurView>
+          </Animated.View>
+        );
+      })()}
+
+      {/* YAKIN RADARLAR LİSTESİ */}
+      {showList && (
+        <Animated.View style={[s.listWrap, { transform: [{ translateY: listAnim }] }]}>
+          <BlurView intensity={98} tint="dark" style={s.listInner}>
+            <View style={s.listHandle} />
+            <View style={s.listHead}>
+              <Text style={s.listTitle}>Yakındaki Radarlar</Text>
+              <TouchableOpacity onPress={() => Animated.timing(listAnim, { toValue: height, duration: 320, useNativeDriver: true }).start(() => setShowList(false))}>
+                <Text style={s.listClose}>Kapat</Text>
+              </TouchableOpacity>
+            </View>
+            <FlatList
+              data={nearbyRadars}
+              keyExtractor={(_, i) => i.toString()}
+              renderItem={({ item, index }) => {
+                const type = getRadarType(item.Aciklama);
+                return (
+                  <TouchableOpacity style={s.listItem} onPress={() => {
+                    setShowList(false);
+                    openDetail(item);
+                    mapRef.current?.animateToRegion({
+                      latitude: parseFloat(item.lat), longitude: parseFloat(item.lng),
+                      latitudeDelta: 0.008, longitudeDelta: 0.008,
+                    }, 700);
+                  }}>
+                    <View style={[s.listIdx, { backgroundColor: index === 0 ? '#FF3B30' : '#2c2c2c' }]}>
+                      <Text style={s.listIdxTxt}>{index + 1}</Text>
+                    </View>
+                    <View style={{ flex: 1, marginLeft: 12 }}>
+                      <Text style={s.listItemTitle} numberOfLines={1}>{item.Aciklama}</Text>
+                      <Text style={[s.listItemType, { color: type.color }]}>{type.icon} {type.label} · {fmtDist(item.dist)}</Text>
+                    </View>
+                    <ShieldAlert color={index === 0 ? '#FF3B30' : '#444'} size={15} />
+                  </TouchableOpacity>
+                );
+              }}
+              ItemSeparatorComponent={() => <View style={s.sep} />}
+            />
           </BlurView>
         </Animated.View>
       )}
 
       {/* AYARLAR */}
-      <Modal visible={showSettings} animationType="slide" presentationStyle="pageSheet"><SettingsScreen settings={settings} onSettingsChange={setSettings} onClose={() => setShowSettings(false)} /></Modal>
+      <Modal visible={showSettings} animationType="slide" presentationStyle="pageSheet">
+        <SettingsScreen settings={settings} onSettingsChange={setSettings} onClose={() => setShowSettings(false)} />
+      </Modal>
     </View>
   );
 }
 
-function Btn({ children, onPress }) { return <TouchableOpacity style={s.ctrlBtn} onPress={onPress}>{children}</TouchableOpacity>; }
+function Btn({ children, onPress }) {
+  return <TouchableOpacity style={s.ctrlBtn} onPress={onPress}>{children}</TouchableOpacity>;
+}
 
+// ─── STİLLER ─────────────────────────────────────────────────────────────────
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#000' },
   map: { flex: 1 },
   pin: { width: 18, height: 18, justifyContent: 'center', alignItems: 'center' },
-  pinDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#FF3B30', borderWidth: 2, borderColor: '#fff' },
+  pinDot: { width: 10, height: 10, borderRadius: 5, borderWidth: 2, borderColor: '#fff' },
   pinDotAlert: { width: 14, height: 14, borderRadius: 7, shadowOpacity: 1, shadowRadius: 8, shadowColor: '#FF3B30' },
-  header: { position: 'absolute', top: 0, left: 0, right: 0, paddingTop: 50, paddingHorizontal: 18, paddingBottom: 15, borderBottomWidth: 0.5, borderColor: 'rgba(255,255,255,0.08)' },
+  communityPin: { alignItems: 'center', justifyContent: 'center' },
+  communityPinText: { fontSize: 22 },
+  voteBadge: { position: 'absolute', top: -4, right: -8, backgroundColor: '#AF52DE', borderRadius: 8, paddingHorizontal: 4, paddingVertical: 1 },
+  voteTxt: { color: '#fff', fontSize: 9, fontWeight: '700' },
+  header: { position: 'absolute', top: 0, left: 0, right: 0, paddingTop: 50, paddingHorizontal: 18, paddingBottom: 14, borderBottomWidth: 0.5, borderColor: 'rgba(255,255,255,0.08)' },
   hRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   appName: { color: '#fff', fontSize: 24, fontWeight: '900', letterSpacing: -0.5 },
-  hBtns: { flexDirection: 'row', gap: 10 },
+  badge: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
+  dot: { width: 7, height: 7, borderRadius: 4, marginRight: 5 },
+  badgeTxt: { color: '#666', fontSize: 11 },
   hBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.1)', justifyContent: 'center', alignItems: 'center' },
-  
-  // Search Bar
-  searchWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 12, marginTop: 15, height: 46 },
-  searchInput: { flex: 1, color: '#fff', fontSize: 15, paddingHorizontal: 10 },
-  routeInfo: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(48,209,88,0.1)', alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, marginTop: 10, gap: 5 },
-  routeInfoTxt: { color: '#30D158', fontSize: 12, fontWeight: '600' },
-
-  speedWrap: { position: 'absolute', left: 16, bottom: 48 },
-  speedCard: { width: 76, height: 76, borderRadius: 38, justifyContent: 'center', alignItems: 'center', overflow: 'hidden', borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.12)' },
-  speedNum: { fontSize: 24, fontWeight: '800', lineHeight: 26 },
+  searchWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.07)', borderRadius: 12, marginTop: 14, height: 44, borderWidth: 0.5, borderColor: 'rgba(255,255,255,0.1)' },
+  searchInput: { flex: 1, color: '#fff', fontSize: 14, paddingHorizontal: 10 },
+  routeInfoBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: 'rgba(48,209,88,0.08)', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, marginTop: 10, gap: 6 },
+  routeInfoTxt: { color: '#aaa', fontSize: 13, flex: 1, marginLeft: 6 },
+  speedWrap: { position: 'absolute', left: 16, bottom: 50 },
+  speedCard: { width: 74, height: 74, borderRadius: 37, justifyContent: 'center', alignItems: 'center', overflow: 'hidden', borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.12)' },
+  speedNum: { fontSize: 22, fontWeight: '800', lineHeight: 24 },
   speedUnit: { color: '#555', fontSize: 10 },
-  controls: { position: 'absolute', right: 16, bottom: 48, gap: 10 },
-  ctrlBtn: { width: 48, height: 48, borderRadius: 24, backgroundColor: 'rgba(20,20,20,0.88)', justifyContent: 'center', alignItems: 'center', borderWidth: 0.5, borderColor: 'rgba(255,255,255,0.1)' },
-  alertWrap: { position: 'absolute', bottom: 140, left: 14, right: 14 },
-  alertGrad: { borderRadius: 20, borderWidth: 1.5, borderColor: 'rgba(255,59,48,0.55)', overflow: 'hidden' },
+  reportBtn: { position: 'absolute', bottom: 140, left: '50%', marginLeft: -70, width: 140, borderRadius: 22, overflow: 'hidden', borderWidth: 1.5, borderColor: 'rgba(255,149,0,0.5)' },
+  reportBtnSent: { borderColor: 'rgba(48,209,88,0.5)' },
+  reportInner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12 },
+  reportTxt: { color: '#FF9500', fontWeight: '700', fontSize: 14 },
+  controls: { position: 'absolute', right: 16, bottom: 50, gap: 10 },
+  ctrlBtn: { width: 48, height: 48, borderRadius: 24, backgroundColor: 'rgba(20,20,20,0.9)', justifyContent: 'center', alignItems: 'center', borderWidth: 0.5, borderColor: 'rgba(255,255,255,0.1)' },
+  alertWrap: { position: 'absolute', bottom: 148, left: 14, right: 14 },
+  alertGrad: { borderRadius: 20, borderWidth: 1.5, borderColor: 'rgba(255,59,48,0.5)', overflow: 'hidden' },
   alertCard: { flexDirection: 'row', alignItems: 'center', padding: 14 },
   alertIcon: { width: 44, height: 44, borderRadius: 12, backgroundColor: 'rgba(255,59,48,0.15)', justifyContent: 'center', alignItems: 'center' },
-  alertTitle: { color: '#FF3B30', fontWeight: '800', fontSize: 13, letterSpacing: 0.5 },
-  alertDesc: { color: '#bbb', fontSize: 11, marginTop: 2 },
+  alertTitle: { color: '#FF3B30', fontWeight: '800', fontSize: 12, letterSpacing: 0.5 },
+  alertType: { color: '#FF9500', fontSize: 11, marginTop: 1 },
+  alertDesc: { color: '#999', fontSize: 10, marginTop: 1 },
   alertDistBox: { alignItems: 'center', paddingLeft: 10 },
   alertDistNum: { color: '#FF3B30', fontSize: 18, fontWeight: '900' },
   alertDistLbl: { color: '#555', fontSize: 9 },
-  detailWrap: { position: 'absolute', left: 0, right: 0, bottom: 0, height: height * 0.5, borderTopLeftRadius: 28, borderTopRightRadius: 28, overflow: 'hidden' },
+  detailWrap: { position: 'absolute', left: 0, right: 0, bottom: 0, height: height * 0.55, borderTopLeftRadius: 28, borderTopRightRadius: 28, overflow: 'hidden' },
   detailInner: { flex: 1, paddingHorizontal: 20, paddingTop: 12 },
   detailHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.2)', alignSelf: 'center', marginBottom: 18 },
-  detailHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-  detailIconBox: { width: 52, height: 52, borderRadius: 16, backgroundColor: 'rgba(255,59,48,0.12)', justifyContent: 'center', alignItems: 'center' },
+  detailHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 14 },
+  detailIconBox: { width: 52, height: 52, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
   detailTitle: { color: '#fff', fontSize: 17, fontWeight: '700' },
-  detailCoord: { color: '#555', fontSize: 11, marginTop: 3 },
-  detailDesc: { color: '#aaa', fontSize: 13, lineHeight: 20, marginBottom: 20 },
+  typeBadge: { alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, borderWidth: 1, marginTop: 4 },
+  typeBadgeTxt: { fontSize: 11, fontWeight: '600' },
+  detailDesc: { color: '#888', fontSize: 13, lineHeight: 20, marginBottom: 18 },
+  detailStats: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 16, paddingVertical: 14, marginBottom: 16 },
+  dStat: { flex: 1, alignItems: 'center' },
+  dStatVal: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  dStatLbl: { color: '#555', fontSize: 11, marginTop: 3 },
+  dStatSep: { width: 0.5, backgroundColor: 'rgba(255,255,255,0.1)', marginVertical: 6 },
   mapsBtn: { borderRadius: 16, overflow: 'hidden' },
   mapsBtnInner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 16 },
   mapsBtnTxt: { color: '#007AFF', fontSize: 16, fontWeight: '600' },
+  listWrap: { position: 'absolute', left: 0, right: 0, bottom: 0, height: height * 0.6, borderTopLeftRadius: 26, borderTopRightRadius: 26, overflow: 'hidden' },
+  listInner: { flex: 1, paddingTop: 10 },
+  listHandle: { width: 38, height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.2)', alignSelf: 'center', marginBottom: 14 },
+  listHead: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 18, marginBottom: 8 },
+  listTitle: { color: '#fff', fontSize: 17, fontWeight: '700' },
+  listClose: { color: '#007AFF', fontSize: 16 },
+  listItem: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 18, paddingVertical: 13 },
+  listIdx: { width: 28, height: 28, borderRadius: 8, justifyContent: 'center', alignItems: 'center' },
+  listIdxTxt: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  listItemTitle: { color: '#fff', fontSize: 13 },
+  listItemType: { fontSize: 11, marginTop: 2 },
+  sep: { height: 0.5, backgroundColor: 'rgba(255,255,255,0.06)', marginLeft: 58 },
 });

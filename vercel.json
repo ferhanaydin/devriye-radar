@@ -8,6 +8,10 @@
     {
       "src": "/api/markers",
       "dest": "/api/index.js"
+    },
+    {
+      "src": "/api/community",
+      "dest": "/api/community.js"
     }
   ]
 }
