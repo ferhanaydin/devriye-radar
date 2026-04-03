@@ -1,63 +1,96 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const KEYS = {
-  ALERT_DISTANCE: '@settings_alertDistance',
-  SOUND_ENABLED: '@settings_soundEnabled',
-  VOICE_ENABLED: '@settings_voiceEnabled',
-  HAPTIC_ENABLED: '@settings_hapticEnabled',
-  STATS: '@stats_data',
-};
+const SETTINGS_KEY = '@devriye_settings';
+const STATS_KEY    = '@devriye_stats';
+const WEEKLY_KEY   = '@devriye_weekly';
 
 export const DEFAULT_SETTINGS = {
-  alertDistance: 500,   // metre
-  soundEnabled: true,
-  voiceEnabled: true,
+  alertDistance: 500,
+  soundEnabled:  true,
+  voiceEnabled:  true,
   hapticEnabled: true,
 };
 
+// ─── Ayarlar ─────────────────────────────────────────────────────────────────
 export async function loadSettings() {
   try {
-    const [dist, sound, voice, haptic] = await Promise.all([
-      AsyncStorage.getItem(KEYS.ALERT_DISTANCE),
-      AsyncStorage.getItem(KEYS.SOUND_ENABLED),
-      AsyncStorage.getItem(KEYS.VOICE_ENABLED),
-      AsyncStorage.getItem(KEYS.HAPTIC_ENABLED),
-    ]);
-    return {
-      alertDistance: dist ? parseInt(dist) : DEFAULT_SETTINGS.alertDistance,
-      soundEnabled: sound !== null ? sound === 'true' : DEFAULT_SETTINGS.soundEnabled,
-      voiceEnabled: voice !== null ? voice === 'true' : DEFAULT_SETTINGS.voiceEnabled,
-      hapticEnabled: haptic !== null ? haptic === 'true' : DEFAULT_SETTINGS.hapticEnabled,
-    };
-  } catch {
-    return DEFAULT_SETTINGS;
-  }
+    const json = await AsyncStorage.getItem(SETTINGS_KEY);
+    return json ? { ...DEFAULT_SETTINGS, ...JSON.parse(json) } : DEFAULT_SETTINGS;
+  } catch { return DEFAULT_SETTINGS; }
 }
 
-export async function saveSetting(key, value) {
-  const storageKey = KEYS[key];
-  if (!storageKey) return;
-  await AsyncStorage.setItem(storageKey, String(value));
+export async function saveSettings(settings) {
+  try { await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); }
+  catch {}
 }
 
-// ─── İstatistikler ────────────────────────────────────────────────────────────
+// ─── Genel İstatistikler ──────────────────────────────────────────────────────
 export async function loadStats() {
   try {
-    const raw = await AsyncStorage.getItem(KEYS.STATS);
-    return raw ? JSON.parse(raw) : { totalWarnings: 0, todayWarnings: 0, lastDate: null };
-  } catch {
-    return { totalWarnings: 0, todayWarnings: 0, lastDate: null };
-  }
+    const json = await AsyncStorage.getItem(STATS_KEY);
+    const stats = json ? JSON.parse(json) : { totalWarnings: 0, todayWarnings: 0, lastDate: null };
+    // Gün geçtiyse bugünküyü sıfırla
+    const today = new Date().toDateString();
+    if (stats.lastDate !== today) {
+      stats.todayWarnings = 0;
+      stats.lastDate = today;
+    }
+    return stats;
+  } catch { return { totalWarnings: 0, todayWarnings: 0, lastDate: null }; }
 }
 
 export async function incrementWarning() {
-  const stats = await loadStats();
-  const today = new Date().toDateString();
-  const updated = {
-    totalWarnings: stats.totalWarnings + 1,
-    todayWarnings: stats.lastDate === today ? stats.todayWarnings + 1 : 1,
-    lastDate: today,
-  };
-  await AsyncStorage.setItem(KEYS.STATS, JSON.stringify(updated));
-  return updated;
+  try {
+    const stats = await loadStats();
+    stats.totalWarnings += 1;
+    stats.todayWarnings += 1;
+    stats.lastDate = new Date().toDateString();
+    await AsyncStorage.setItem(STATS_KEY, JSON.stringify(stats));
+
+    // Haftalık veriye de ekle
+    await addWeeklyWarning();
+    return stats;
+  } catch { return { totalWarnings: 0, todayWarnings: 0 }; }
+}
+
+// ─── Haftalık İstatistikler ───────────────────────────────────────────────────
+// Format: { "2026-04-03": 5, "2026-04-02": 3, ... }
+export async function loadWeeklyStats() {
+  try {
+    const json = await AsyncStorage.getItem(WEEKLY_KEY);
+    const data = json ? JSON.parse(json) : {};
+
+    // Son 7 günü düzenli al
+    const result = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const key  = d.toISOString().split('T')[0]; // "2026-04-03"
+      const label = d.toLocaleDateString('tr-TR', { weekday: 'short' }); // "Prş"
+      result.push({ key, label, count: data[key] || 0 });
+    }
+    return result;
+  } catch { return []; }
+}
+
+async function addWeeklyWarning() {
+  try {
+    const json = await AsyncStorage.getItem(WEEKLY_KEY);
+    const data = json ? JSON.parse(json) : {};
+    const today = new Date().toISOString().split('T')[0];
+    data[today] = (data[today] || 0) + 1;
+
+    // Sadece son 30 günü sakla (temizlik)
+    const keys = Object.keys(data).sort().reverse();
+    const trimmed = {};
+    keys.slice(0, 30).forEach(k => { trimmed[k] = data[k]; });
+
+    await AsyncStorage.setItem(WEEKLY_KEY, JSON.stringify(trimmed));
+  } catch {}
+}
+
+export async function clearStats() {
+  try {
+    await AsyncStorage.multiRemove([STATS_KEY, WEEKLY_KEY]);
+  } catch {}
 }
